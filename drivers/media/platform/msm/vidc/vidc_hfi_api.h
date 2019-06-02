@@ -246,11 +246,6 @@ enum hal_default_properties {
 	HAL_VIDEO_CONTINUE_DATA_TRANSFER = 0x00000002,
 };
 
-enum hal_hfi_version {
-	HAL_VIDEO_2X,
-	HAL_VIDEO_3X,
-};
-
 enum hal_video_codec {
 	HAL_VIDEO_CODEC_UNKNOWN  = 0x00000000,
 	HAL_VIDEO_CODEC_MVC      = 0x00000001,
@@ -1007,14 +1002,6 @@ struct vidc_seq_hdr {
 	u32 seq_hdr_len;
 };
 
-struct hal_fw_info {
-	char version[128];
-	int base_addr;
-	int register_base;
-	int register_size;
-	int irq;
-};
-
 enum hal_flush {
 	HAL_FLUSH_INPUT,
 	HAL_FLUSH_OUTPUT,
@@ -1289,6 +1276,14 @@ enum msm_vidc_hfi_type {
 	VIDC_HFI_Q6,
 };
 
+enum fw_info {
+	FW_BASE_ADDRESS,
+	FW_REGISTER_BASE,
+	FW_REGISTER_SIZE,
+	FW_IRQ,
+	FW_INFO_MAX,
+};
+
 enum msm_vidc_thermal_level {
 	VIDC_THERMAL_NORMAL = 0,
 	VIDC_THERMAL_LOW,
@@ -1363,14 +1358,14 @@ struct hfi_device {
 	int (*session_get_property)(void *sess, enum hal_property ptype);
 	int (*scale_clocks)(void *dev, int load, int codecs_enabled);
 	int (*vote_bus)(void *dev, struct vidc_bus_vote_data *data,
-			int num_data);
+			int num_data, int requested_level);
 	int (*unvote_bus)(void *dev);
 	int (*iommu_get_domain_partition)(void *dev, u32 flags, u32 buffer_type,
 			int *domain_num, int *partition_num);
 	int (*load_fw)(void *dev);
 	void (*unload_fw)(void *dev);
 	int (*resurrect_fw)(void *dev);
-	int (*get_fw_info)(void *dev, struct hal_fw_info *fw_info);
+	int (*get_fw_info)(void *dev, enum fw_info info);
 	int (*get_stride_scanline)(int color_fmt, int width,
 		int height,	int *stride, int *scanlines);
 	int (*session_clean)(void *sess);
@@ -1379,7 +1374,6 @@ struct hfi_device {
 	int (*suspend)(void *dev);
 	unsigned long (*get_core_clock_rate)(void *dev);
 	enum hal_default_properties (*get_default_properties)(void *dev);
-	enum hal_hfi_version (*get_version)(void *dev);
 };
 
 typedef void (*hfi_cmd_response_callback) (enum command_response cmd,

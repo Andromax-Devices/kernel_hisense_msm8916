@@ -40,6 +40,10 @@ struct msm_led_flash_reg_t {
 	struct msm_camera_i2c_reg_setting *release_setting;
 	struct msm_camera_i2c_reg_setting *low_setting;
 	struct msm_camera_i2c_reg_setting *high_setting;
+	struct msm_camera_i2c_reg_setting *led1_low_setting;//hisense add for dual flash 2014.12.23
+	struct msm_camera_i2c_reg_setting *led2_low_setting;
+	struct msm_camera_i2c_reg_setting *led1_high_setting;
+	struct msm_camera_i2c_reg_setting *led2_high_setting;
 };
 
 struct msm_led_flash_ctrl_t {
@@ -69,6 +73,9 @@ struct msm_led_flash_ctrl_t {
 	enum msm_camera_led_config_t led_state;
 	uint32_t subdev_id;
 	struct msm_pinctrl_info pinctrl_info;
+	struct led_classdev led_cl_dev;//hisense add for led-flash
+	struct regulator *reg_flash;
+	uint8_t flag_error_addr;  ////added for read error  register hisense add 2014.12.23 
 };
 
 int msm_flash_i2c_probe(struct i2c_client *client,

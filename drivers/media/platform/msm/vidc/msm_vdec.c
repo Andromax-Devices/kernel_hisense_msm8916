@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,8 +20,6 @@
 
 #define MSM_VDEC_DVC_NAME "msm_vdec_8974"
 #define MIN_NUM_OUTPUT_BUFFERS 4
-#define MIN_NUM_CAPTURE_BUFFERS 6
-#define MIN_NUM_THUMBNAIL_MODE_CAPTURE_BUFFERS 1
 #define MAX_NUM_OUTPUT_BUFFERS VB2_MAX_FRAME
 #define DEFAULT_VIDEO_CONCEAL_COLOR_BLACK 0x8010
 #define MB_SIZE_IN_PIXEL (16 * 16)
@@ -523,26 +521,6 @@ static struct msm_vidc_ctrl msm_vdec_ctrls[] = {
 		.menu_skip_mask = 0,
 		.qmenu = NULL,
 	},
-	{
-		.id = V4L2_CID_MPEG_VIDC_VIDEO_PRIORITY,
-		.name = "Session Priority",
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.minimum = V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_ENABLE,
-		.maximum = V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_DISABLE,
-		.default_value = V4L2_MPEG_VIDC_VIDEO_PRIORITY_REALTIME_DISABLE,
-		.step = 1,
-		.qmenu = NULL,
-	},
-	{
-		.id = V4L2_CID_MPEG_VIDC_VIDEO_OPERATING_RATE,
-		.name = "Set Decoder Operating rate",
-		.type = V4L2_CTRL_TYPE_INTEGER,
-		.minimum = 0,
-		.maximum = 300 << 16,  /* 300 fps in Q16 format*/
-		.default_value = 0,
-		.step = 1,
-		.qmenu = NULL,
-	},
 };
 
 #define NUM_CTRLS ARRAY_SIZE(msm_vdec_ctrls)
@@ -788,14 +766,6 @@ int msm_vdec_prepare_buf(struct msm_vidc_inst *inst,
 	}
 	hdev = inst->core->device;
 
-	if (inst->state == MSM_VIDC_CORE_INVALID ||
-			inst->core->state == VIDC_CORE_INVALID) {
-		dprintk(VIDC_ERR,
-			"Core %p in bad state, ignoring prepare buf\n",
-				inst->core);
-		goto exit;
-	}
-
 	switch (b->type) {
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
 		break;
@@ -846,7 +816,6 @@ int msm_vdec_prepare_buf(struct msm_vidc_inst *inst,
 		dprintk(VIDC_ERR, "Buffer type not recognized: %d\n", b->type);
 		break;
 	}
-exit:
 	return rc;
 }
 
@@ -1153,7 +1122,7 @@ int msm_vdec_s_parm(struct msm_vidc_inst *inst, struct v4l2_streamparm *a)
 
 	if ((fps % 15 == 14) || (fps % 24 == 23))
 		fps = fps + 1;
-	else if ((fps > 1) && ((fps % 24 == 1) || (fps % 15 == 1)))
+	else if ((fps % 24 == 1) || (fps % 15 == 1))
 		fps = fps - 1;
 
 	if (inst->prop.fps != fps) {
@@ -1167,13 +1136,12 @@ exit:
 	return rc;
 }
 
-static int set_buffer_size_actual(struct msm_vidc_inst *inst,
+static int set_buffer_size(struct msm_vidc_inst *inst,
 				u32 buffer_size, enum hal_buffer buffer_type)
 {
 	int rc = 0;
 	struct hfi_device *hdev;
 	struct hal_buffer_size_actual buffer_size_actual;
-	enum hal_hfi_version version;
 
 	if (!inst || !inst->core || !inst->core->device) {
 		dprintk(VIDC_ERR, "%s invalid parameters\n", __func__);
@@ -1181,14 +1149,6 @@ static int set_buffer_size_actual(struct msm_vidc_inst *inst,
 	}
 
 	hdev = inst->core->device;
-	version = call_hfi_op(hdev, get_version,
-			hdev->hfi_device_data);
-
-	if (version != HAL_VIDEO_3X) {
-		dprintk(VIDC_DBG,
-			"Skip Set actual buffer size\n");
-		return 0;
-	}
 
 	dprintk(VIDC_DBG,
 		"Set actual buffer size = %d for buffer type %d to fw\n",
@@ -1197,53 +1157,12 @@ static int set_buffer_size_actual(struct msm_vidc_inst *inst,
 	buffer_size_actual.buffer_type = buffer_type;
 	buffer_size_actual.buffer_size = buffer_size;
 	rc = call_hfi_op(hdev, session_set_property,
-		 inst->session, HAL_PARAM_BUFFER_SIZE_ACTUAL,
-		 &buffer_size_actual);
+			 inst->session, HAL_PARAM_BUFFER_SIZE_ACTUAL,
+			 &buffer_size_actual);
 	if (rc) {
 		dprintk(VIDC_ERR,
 			"%s - failed to set actual buffer size %u on firmware\n",
 			__func__, buffer_size);
-	}
-	return rc;
-}
-
-static int set_display_hold_count_actual(struct msm_vidc_inst *inst,
-				u32 hold_count, enum hal_buffer buffer_type)
-{
-	int rc = 0;
-	struct hfi_device *hdev;
-	struct hal_buffer_display_hold_count_actual display_hold_count;
-	enum hal_hfi_version version;
-
-	if (!inst || !inst->core || !inst->core->device) {
-		dprintk(VIDC_ERR, "%s invalid parameters\n", __func__);
-		return -EINVAL;
-	}
-
-	hdev = inst->core->device;
-	version = call_hfi_op(hdev, get_version,
-			hdev->hfi_device_data);
-
-	if (version != HAL_VIDEO_3X) {
-		dprintk(VIDC_DBG,
-			"Skip Set display hold count actual\n");
-		return 0;
-	}
-
-	dprintk(VIDC_DBG,
-		"Set display hold count = %d for buffer type %d to fw\n",
-		hold_count, buffer_type);
-
-	display_hold_count.buffer_type = buffer_type;
-	display_hold_count.hold_count = hold_count;
-
-	rc = call_hfi_op(hdev, session_set_property,
-		 inst->session, HAL_PARAM_BUFFER_DISPLAY_HOLD_COUNT_ACTUAL,
-		 &display_hold_count);
-	if (rc) {
-		dprintk(VIDC_ERR,
-			"failed to set buffer display hold count actual %u on firmware\n",
-			hold_count);
 	}
 	return rc;
 }
@@ -1253,12 +1172,9 @@ static int update_output_buffer_size(struct msm_vidc_inst *inst,
 {
 	int rc = 0, i = 0;
 	struct hal_buffer_requirements *bufreq;
-	struct hfi_device *hdev;
 
 	if (!inst || !f || !fmt)
 		return -EINVAL;
-
-	hdev = inst->core->device;
 
 	/*
 	 * Compare set buffer size and update to firmware if it's bigger
@@ -1275,11 +1191,11 @@ static int update_output_buffer_size(struct msm_vidc_inst *inst,
 		bufreq = get_buff_req_buffer(inst, type);
 		if (!bufreq)
 			goto exit;
+
 		if (f->fmt.pix_mp.plane_fmt[i].sizeimage >
 			bufreq->buffer_size) {
-			rc = set_buffer_size_actual(inst,
-				f->fmt.pix_mp.plane_fmt[i].sizeimage,
-				type);
+			rc = set_buffer_size(inst,
+				f->fmt.pix_mp.plane_fmt[i].sizeimage, type);
 			if (rc)
 				goto exit;
 		}
@@ -1467,7 +1383,6 @@ int msm_vdec_s_fmt(struct msm_vidc_inst *inst, struct v4l2_format *f)
 		rc = msm_comm_try_state(inst, MSM_VIDC_OPEN_DONE);
 		if (rc) {
 			dprintk(VIDC_ERR, "Failed to open instance\n");
-			msm_comm_session_clean(inst);
 			goto err_invalid_fmt;
 		}
 
@@ -1559,8 +1474,7 @@ static int msm_vdec_queue_setup(struct vb2_queue *q,
 	struct hfi_device *hdev;
 	struct hal_buffer_count_actual new_buf_count;
 	enum hal_property property_id;
-	u32 hold_count = 0;
-	int min_buff_count = 0;
+	struct hal_buffer_display_hold_count_actual display_hold_count;
 
 	if (!q || !num_buffers || !num_planes
 		|| !sizes || !q->drv_priv) {
@@ -1604,7 +1518,6 @@ static int msm_vdec_queue_setup(struct vb2_queue *q,
 		rc = msm_comm_try_state(inst, MSM_VIDC_OPEN_DONE);
 		if (rc) {
 			dprintk(VIDC_ERR, "Failed to open instance\n");
-			msm_comm_session_clean(inst);
 			break;
 		}
 		rc = msm_comm_try_get_bufreqs(inst);
@@ -1625,14 +1538,6 @@ static int msm_vdec_queue_setup(struct vb2_queue *q,
 		}
 
 		*num_buffers = max(*num_buffers, bufreq->buffer_count_min);
-
-		min_buff_count = (!!(inst->flags & VIDC_THUMBNAIL)) ?
-			MIN_NUM_THUMBNAIL_MODE_CAPTURE_BUFFERS :
-			MIN_NUM_CAPTURE_BUFFERS;
-
-		*num_buffers = clamp_val(*num_buffers,
-			min_buff_count, VB2_MAX_FRAME);
-
 		if (*num_buffers != bufreq->buffer_count_actual) {
 			property_id = HAL_PARAM_BUFFER_COUNT_ACTUAL;
 			new_buf_count.buffer_type =
@@ -1641,13 +1546,18 @@ static int msm_vdec_queue_setup(struct vb2_queue *q,
 			rc = call_hfi_op(hdev, session_set_property,
 				inst->session, property_id, &new_buf_count);
 
-			hold_count = *num_buffers - bufreq->buffer_count_actual;
+			if (*num_buffers - bufreq->buffer_count_actual) {
+				display_hold_count.buffer_type =
+					msm_comm_get_hal_output_buffer(inst);
 
-			if (hold_count)
-				set_display_hold_count_actual(inst,
-					hold_count,
-					msm_comm_get_hal_output_buffer(inst));
+				display_hold_count.hold_count = *num_buffers -
+					bufreq->buffer_count_actual;
+				rc = call_hfi_op(hdev, session_set_property,
+				inst->session,
+				HAL_PARAM_BUFFER_DISPLAY_HOLD_COUNT_ACTUAL,
+				&display_hold_count);
 			}
+		}
 
 		if (*num_buffers != bufreq->buffer_count_actual) {
 			rc = msm_comm_try_get_bufreqs(inst);
@@ -2418,14 +2328,6 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 		dprintk(VIDC_DBG, "%s non_secure output2\n",
 			ctrl->val ? "Enabling" : "Disabling");
 		pdata = &hal_property;
-		break;
-	case V4L2_CID_MPEG_VIDC_VIDEO_PRIORITY:
-		property_id = HAL_CONFIG_REALTIME;
-		hal_property.enable = ctrl->val;
-		pdata = &hal_property;
-		break;
-	case V4L2_CID_MPEG_VIDC_VIDEO_OPERATING_RATE:
-		property_id = 0;
 		break;
 	default:
 		break;

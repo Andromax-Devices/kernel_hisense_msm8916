@@ -273,3 +273,20 @@ config MSM_FD
 	 depends on MSMB_CAMERA
 	 ---help---
 	    Enables support for the MSM FD face detection engine.
+config LM3642
+	bool "LM3642(1.5A)"
+	depends on MSMB_CAMERA
+	---help---
+		flash lm3642 max = 1.5A.
+config LM3559
+	bool "LM3559(3.4A)"
+	depends on MSMB_CAMERA
+	---help---
+		flash lm3559 max = 3.4A.
+		
+config LM3642_FRONT
+	bool "LM3642(1.5A)"
+	depends on MSMB_CAMERA
+	---help---
+		flash lm3642 max = 1.5A.
+

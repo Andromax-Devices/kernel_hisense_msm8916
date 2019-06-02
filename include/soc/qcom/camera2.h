@@ -58,6 +58,8 @@ struct msm_pinctrl_info {
 	struct pinctrl_state *gpio_state_active;
 	struct pinctrl_state *gpio_state_suspend;
 	bool use_pinctrl;
+	bool use_gpio_power;
+	bool not_flash_node;
 };
 
 struct msm_cam_clk_setting {
@@ -79,6 +81,7 @@ struct msm_camera_gpio_num_info {
 };
 
 struct msm_camera_gpio_conf {
+	int gpio_array_size; //add by hisense 2014.12.23
 	void *cam_gpiomux_conf_tbl;
 	uint8_t cam_gpiomux_conf_tbl_size;
 	struct gpio *cam_gpio_common_tbl;
@@ -157,6 +160,8 @@ struct msm_camera_sensor_board_info {
 	const char *misc_regulator;
 	struct msm_camera_power_ctrl_t power_info;
 	struct msm_camera_sensor_slave_info *cam_slave_info;
+	struct camera_vreg_t *cam_vreg;
+	int num_vreg;
 };
 
 enum msm_camera_i2c_cmd_type {

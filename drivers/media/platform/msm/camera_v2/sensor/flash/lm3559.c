@@ -12,80 +12,128 @@
  */
 #include <linux/module.h>
 #include <linux/export.h>
-//#include <mach/gpiomux.h>
-//#include "msm_camera_io_util.h"
+#include "msm_camera_io_util.h"
 #include "msm_led_flash.h"
 
-#define FLASH_NAME "ti,lm3642"
-//#define CAM_FLASH_PINCTRL_STATE_SLEEP "cam_flash_suspend"
-//#define CAM_FLASH_PINCTRL_STATE_DEFAULT "cam_flash_default"
+#define FLASH_NAME "ti,lm3559"
+#define CAM_FLASH_PINCTRL_STATE_SLEEP "cam_flash_suspend"
+#define CAM_FLASH_PINCTRL_STATE_DEFAULT "cam_flash_default"
 
-/*#define CONFIG_MSMB_CAMERA_DEBUG*/
-#undef CDBG
+#define CONFIG_MSMB_CAMERA_DEBUG
 #ifdef CONFIG_MSMB_CAMERA_DEBUG
-#define LM3642_DBG(fmt, args...) pr_err(fmt, ##args)
+#define LM3559_DBG(fmt, args...) pr_err(fmt, ##args)
 #else
-#define LM3642_DBG(fmt, args...)
+#define LM3559_DBG(fmt, args...)
 #endif
 
+/* Registers */
+#define LM3559_ENABLE				0x10
+#define LM3559_MI_CONF1				0x12
+#define LM3559_MI_CONF2				0x13
+#define LM3559_TORCH_BRT			0xA0
+#define LM3559_FLASH_BRT			0xB0
+#define LM3559_FLASH_CONFIG			0xC0
+#define LM3559_FLAGS				0xD0
+#define LM3559_CONFIG1				0xE0
+#define LM3559_LAST_FLASH			0x81
+#define LM3559_GPIO_CONF        	0x20
+
+/* Mask/Shift/Value */
+#define LM3559_FLASH_M				0x3F	/* ENABLE register*/
+#define LM3559_FLASH_ON				0x1B
+#define LM3559_FLASH_OFF			0x00
+#define LM3559_DEVICE_OFF			0x00
+#define LM3559_MI_M					0xC0
+#define LM3559_MI_ON				0xC0
+#define LM3559_FLASH_TIMEOUT_M		0x1F	/* FLASH_CONFIG register */
+#define LM3559_MI_MODE_M			0x10	/* CONFIG1 register */
+#define LM3559_MI_MODE_OUT			0x00
+#define LM3559_TORCH_ON         	0x1A
+#define LM3559_FLASH_TIMEOUT_FLG    0x01
+#define LM3559_HARDWARE_TORCH		0x80
+
+#define MAX_FLASH_BRIGHTNESS		16
+#define LM3559_MAX_TIMEOUT			31
 
 static struct msm_led_flash_ctrl_t fctrl;
-static struct i2c_driver lm3642_i2c_driver;
+static struct i2c_driver lm3559_i2c_driver;
 
-static struct msm_camera_i2c_reg_array lm3642_init_array[] = {
-	//{0x0A, 0x00},
-	//{0x09, 0x19},
-	{0x01, 0x18},
-	{0x08, 0x06},
-	{0x09, 0x3A},//torch:187mA,flash:1031mA
-	{0x0A, 0x00},
+static struct msm_camera_i2c_reg_array lm3559_init_array[] = {
+	//{ LM3559_CONFIG1,   0x6c },
+	{ LM3559_FLASH_BRT, 0x00},
+	{ LM3559_ENABLE,    0x18},
+    { LM3559_FLASH_CONFIG, 0x0f}, 
+
+
 };
 
-static struct msm_camera_i2c_reg_array lm3642_off_array[] = {
-	{0x0A, 0x00},
+static struct msm_camera_i2c_reg_array lm3559_off_array[] = {
+	{LM3559_ENABLE, 0x00},
 };
 
-static struct msm_camera_i2c_reg_array lm3642_release_array[] = {
-	{0x0A, 0x00},
+static struct msm_camera_i2c_reg_array lm3559_led1_low_array[] = {
+	{LM3559_TORCH_BRT, 0x09},
+	{LM3559_ENABLE, 0x0a},
 };
 
-static struct msm_camera_i2c_reg_array lm3642_low_array[] = {
-	//{0x0A, 0x22},
-	//{0x01, 0x00},
-	//{0x09, 0x26},
-	{0x0A, 0x02},
+static struct msm_camera_i2c_reg_array lm3559_led2_low_array[] = {
+	{LM3559_TORCH_BRT, 0x09},
+	{LM3559_ENABLE, 0x12},
 };
 
-static struct msm_camera_i2c_reg_array lm3642_high_array[] = {
-	//{0x0A, 0x23},
-	//{0x01, 0x00},
-	//{0x09, 0x27},
-	{0x0A, 0x03},
+static struct msm_camera_i2c_reg_array lm3559_led1_high_array[] = {
+	{LM3559_FLASH_BRT, 0xdd},
+	{LM3559_ENABLE, 0x0b},
 };
 
-static void __exit msm_flash_lm3642_i2c_remove(void)
+static struct msm_camera_i2c_reg_array lm3559_led2_high_array[] = {
+	{LM3559_FLASH_BRT, 0xdd},
+	{LM3559_ENABLE, 0x13},
+};
+
+
+
+
+static struct msm_camera_i2c_reg_array lm3559_release_array[] = {
+	{LM3559_ENABLE, 0x00},
+};
+
+static struct msm_camera_i2c_reg_array lm3559_low_array[] = {
+	{LM3559_TORCH_BRT, 0x1b},  //qxd make two led torch together,225ma
+	{LM3559_ENABLE, 0x1a},   
+
+	
+};
+
+static struct msm_camera_i2c_reg_array lm3559_high_array[] = {
+	{LM3559_FLASH_BRT, 0xdd},  //qxd make two led flash together,1575ma
+	{LM3559_ENABLE, 0x1b}, 
+
+		
+};
+
+static void __exit msm_flash_lm3559_i2c_remove(void)
 {
-	i2c_del_driver(&lm3642_i2c_driver);
+	i2c_del_driver(&lm3559_i2c_driver);
 	return;
 }
 
-static const struct of_device_id lm3642_i2c_trigger_dt_match[] = {
-	{.compatible = "ti,lm3642", .data = &fctrl},
+static const struct of_device_id lm3559_i2c_trigger_dt_match[] = {
+	{.compatible = "ti,lm3559", .data = &fctrl},
 	{}
 };
 
-MODULE_DEVICE_TABLE(of, lm3642_i2c_trigger_dt_match);
+MODULE_DEVICE_TABLE(of, lm3559_i2c_trigger_dt_match);
 
 static const struct i2c_device_id flash_i2c_id[] = {
-	{"ti,lm3642", (kernel_ulong_t)&fctrl},
+	{"ti,lm3559", (kernel_ulong_t)&fctrl},
 	{ }
 };
 
-static const struct i2c_device_id lm3642_i2c_id[] = {
+static const struct i2c_device_id lm3559_i2c_id[] = {
 	{FLASH_NAME, (kernel_ulong_t)&fctrl},
 	{ }
 };
-#if 0 //use platform's interface modefied hisense
 static int msm_flash_pinctrl_init(struct msm_led_flash_ctrl_t *ctrl)
 {
 	struct msm_pinctrl_info *flash_pctrl = NULL;
@@ -123,12 +171,12 @@ static int msm_flash_pinctrl_init(struct msm_led_flash_ctrl_t *ctrl)
 	return 0;
 }
 
-int msm_flash_lm3642_led_init(struct msm_led_flash_ctrl_t *fctrl)
+int msm_flash_lm3559_led_init(struct msm_led_flash_ctrl_t *fctrl)
 {
 	int rc = 0;
 	struct msm_camera_sensor_board_info *flashdata = NULL;
 	struct msm_camera_power_ctrl_t *power_info = NULL;
-	LM3642_DBG("%s:%d called\n", __func__, __LINE__);
+	LM3559_DBG("%s:%d called\n", __func__, __LINE__);
 
 	flashdata = fctrl->flashdata;
 	power_info = &flashdata->power_info;
@@ -175,7 +223,7 @@ int msm_flash_lm3642_led_init(struct msm_led_flash_ctrl_t *fctrl)
 	return rc;
 }
 
-int msm_flash_lm3642_led_release(struct msm_led_flash_ctrl_t *fctrl)
+int msm_flash_lm3559_led_release(struct msm_led_flash_ctrl_t *fctrl)
 {
 	int rc = 0;
 	struct msm_camera_sensor_board_info *flashdata = NULL;
@@ -183,7 +231,7 @@ int msm_flash_lm3642_led_release(struct msm_led_flash_ctrl_t *fctrl)
 
 	flashdata = fctrl->flashdata;
 	power_info = &flashdata->power_info;
-	LM3642_DBG("%s:%d called\n", __func__, __LINE__);
+	LM3559_DBG("%s:%d called\n", __func__, __LINE__);
 	if (!fctrl) {
 		pr_err("%s:%d fctrl NULL\n", __func__, __LINE__);
 		return -EINVAL;
@@ -214,11 +262,10 @@ int msm_flash_lm3642_led_release(struct msm_led_flash_ctrl_t *fctrl)
 			pr_err("%s:%d cannot set pin to suspend state",
 				__func__, __LINE__);
 	}
-
 	return 0;
 }
 
-int msm_flash_lm3642_led_off(struct msm_led_flash_ctrl_t *fctrl)
+int msm_flash_lm3559_led_off(struct msm_led_flash_ctrl_t *fctrl)
 {
 	int rc = 0;
 	struct msm_camera_sensor_board_info *flashdata = NULL;
@@ -226,7 +273,7 @@ int msm_flash_lm3642_led_off(struct msm_led_flash_ctrl_t *fctrl)
 
 	flashdata = fctrl->flashdata;
 	power_info = &flashdata->power_info;
-	LM3642_DBG("%s:%d called\n", __func__, __LINE__);
+	LM3559_DBG("%s:%d called\n", __func__, __LINE__);
 
 	if (!fctrl) {
 		pr_err("%s:%d fctrl NULL\n", __func__, __LINE__);
@@ -254,12 +301,12 @@ int msm_flash_lm3642_led_off(struct msm_led_flash_ctrl_t *fctrl)
 	return rc;
 }
 
-int msm_flash_lm3642_led_low(struct msm_led_flash_ctrl_t *fctrl)
+int msm_flash_lm3559_led_low(struct msm_led_flash_ctrl_t *fctrl)
 {
 	int rc = 0;
 	struct msm_camera_sensor_board_info *flashdata = NULL;
 	struct msm_camera_power_ctrl_t *power_info = NULL;
-	LM3642_DBG("%s:%d called\n", __func__, __LINE__);
+	LM3559_DBG("%s:%d called\n", __func__, __LINE__);
 
 	flashdata = fctrl->flashdata;
 	power_info = &flashdata->power_info;
@@ -287,12 +334,12 @@ int msm_flash_lm3642_led_low(struct msm_led_flash_ctrl_t *fctrl)
 	return rc;
 }
 
-int msm_flash_lm3642_led_high(struct msm_led_flash_ctrl_t *fctrl)
+int msm_flash_lm3559_led_high(struct msm_led_flash_ctrl_t *fctrl)
 {
 	int rc = 0;
 	struct msm_camera_sensor_board_info *flashdata = NULL;
 	struct msm_camera_power_ctrl_t *power_info = NULL;
-	LM3642_DBG("%s:%d called\n", __func__, __LINE__);
+	LM3559_DBG("%s:%d called\n", __func__, __LINE__);
 
 	flashdata = fctrl->flashdata;
 
@@ -318,118 +365,162 @@ int msm_flash_lm3642_led_high(struct msm_led_flash_ctrl_t *fctrl)
 
 	return rc;
 }
-#endif
-static int msm_flash_lm3642_i2c_probe(struct i2c_client *client,
+
+static int msm_flash_lm3559_i2c_probe(struct i2c_client *client,
 		const struct i2c_device_id *id)
 {
-	LM3642_DBG("%s entry\n", __func__);
+	LM3559_DBG("%s entry\n", __func__);
 	if (!id) {
-		pr_err("msm_flash_lm3642_i2c_probe: id is NULL");
-		id = lm3642_i2c_id;
+		pr_err("msm_flash_lm3559_i2c_probe: id is NULL");
+		id = lm3559_i2c_id;
 	}
 
 	return msm_flash_i2c_probe(client, id);
 }
 
-static struct i2c_driver lm3642_i2c_driver = {
-	.id_table = lm3642_i2c_id,
-	.probe  = msm_flash_lm3642_i2c_probe,
-	.remove = __exit_p(msm_flash_lm3642_i2c_remove),
+static struct i2c_driver lm3559_i2c_driver = {
+	.id_table = lm3559_i2c_id,
+	.probe  = msm_flash_lm3559_i2c_probe,
+	.remove = __exit_p(msm_flash_lm3559_i2c_remove),
 	.driver = {
 		.name = FLASH_NAME,
 		.owner = THIS_MODULE,
-		.of_match_table = lm3642_i2c_trigger_dt_match,
+		.of_match_table = lm3559_i2c_trigger_dt_match,
 	},
 };
 
-static int msm_flash_lm3642_platform_probe(struct platform_device *pdev)
+static int msm_flash_lm3559_platform_probe(struct platform_device *pdev)
 {
 	const struct of_device_id *match;
 
-	match = of_match_device(lm3642_i2c_trigger_dt_match, &pdev->dev);
+	match = of_match_device(lm3559_i2c_trigger_dt_match, &pdev->dev);
 	if (!match)
 		return -EFAULT;
 	return msm_flash_probe(pdev, match->data);
 }
 
-static struct platform_driver lm3642_platform_driver = {
-	.probe = msm_flash_lm3642_platform_probe,
+static struct platform_driver lm3559_platform_driver = {
+	.probe = msm_flash_lm3559_platform_probe,
 	.driver = {
-		.name = "lm3642",
+		.name = "lm3559",
 		.owner = THIS_MODULE,
-		.of_match_table = lm3642_i2c_trigger_dt_match,
+		.of_match_table = lm3559_i2c_trigger_dt_match,
 	},
 };
-static int __init msm_flash_lm3642_init_module(void)
+static int __init msm_flash_lm3559_init_module(void)
 {
 	int32_t rc = 0;
+	LM3559_DBG("%s: enter \n", __func__);
 
-	rc = platform_driver_register(&lm3642_platform_driver);
+	rc = platform_driver_register(&lm3559_platform_driver);
 	if (!rc)
+	{
+		LM3559_DBG("%s:%d rc %d\n", __func__, __LINE__, rc);	
 		return rc;
-	pr_debug("%s:%d rc %d\n", __func__, __LINE__, rc);
-	return i2c_add_driver(&lm3642_i2c_driver);
+	}
+	LM3559_DBG("%s:%d rc %d\n", __func__, __LINE__, rc);
+	return i2c_add_driver(&lm3559_i2c_driver);
 }
-static void __exit msm_flash_lm3642_exit_module(void)
+static void __exit msm_flash_lm3559_exit_module(void)
 {
 	if (fctrl.pdev)
-		platform_driver_unregister(&lm3642_platform_driver);
+		platform_driver_unregister(&lm3559_platform_driver);
 	else
-		i2c_del_driver(&lm3642_i2c_driver);
+		i2c_del_driver(&lm3559_i2c_driver);
 }
-static struct msm_camera_i2c_client lm3642_i2c_client = {
+static struct msm_camera_i2c_client lm3559_i2c_client = {
 	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
 };
 
-static struct msm_camera_i2c_reg_setting lm3642_init_setting = {
-	.reg_setting = lm3642_init_array,
-	.size = ARRAY_SIZE(lm3642_init_array),
-	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
-	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
-	.delay = 0,
-};
-
-static struct msm_camera_i2c_reg_setting lm3642_off_setting = {
-	.reg_setting = lm3642_off_array,
-	.size = ARRAY_SIZE(lm3642_off_array),
+static struct msm_camera_i2c_reg_setting lm3559_init_setting = {
+	.reg_setting = lm3559_init_array,
+	.size = ARRAY_SIZE(lm3559_init_array),
 	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
 	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
 	.delay = 0,
 };
 
-static struct msm_camera_i2c_reg_setting lm3642_release_setting = {
-	.reg_setting = lm3642_release_array,
-	.size = ARRAY_SIZE(lm3642_release_array),
+static struct msm_camera_i2c_reg_setting lm3559_led1_low_setting = {
+	.reg_setting = lm3559_led1_low_array,
+	.size = ARRAY_SIZE(lm3559_led1_low_array),
 	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
 	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
 	.delay = 0,
 };
 
-static struct msm_camera_i2c_reg_setting lm3642_low_setting = {
-	.reg_setting = lm3642_low_array,
-	.size = ARRAY_SIZE(lm3642_low_array),
+static struct msm_camera_i2c_reg_setting lm3559_led2_low_setting = {
+	.reg_setting = lm3559_led2_low_array,
+	.size = ARRAY_SIZE(lm3559_led2_low_array),
 	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
 	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
 	.delay = 0,
 };
 
-static struct msm_camera_i2c_reg_setting lm3642_high_setting = {
-	.reg_setting = lm3642_high_array,
-	.size = ARRAY_SIZE(lm3642_high_array),
+static struct msm_camera_i2c_reg_setting lm3559_led1_high_setting = {
+	.reg_setting = lm3559_led1_high_array,
+	.size = ARRAY_SIZE(lm3559_led1_high_array),
 	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
 	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
 	.delay = 0,
 };
 
-static struct msm_led_flash_reg_t lm3642_regs = {
-	.init_setting = &lm3642_init_setting,
-	.off_setting = &lm3642_off_setting,
-	.low_setting = &lm3642_low_setting,
-	.high_setting = &lm3642_high_setting,
-	.release_setting = &lm3642_release_setting,
+static struct msm_camera_i2c_reg_setting lm3559_led2_high_setting = {
+	.reg_setting = lm3559_led2_high_array,
+	.size = ARRAY_SIZE(lm3559_led2_high_array),
+	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
+	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
+	.delay = 0,
 };
 
-static struct msm_flash_fn_t lm3642_func_tbl = {
+
+
+
+static struct msm_camera_i2c_reg_setting lm3559_off_setting = {
+	.reg_setting = lm3559_off_array,
+	.size = ARRAY_SIZE(lm3559_off_array),
+	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
+	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
+	.delay = 0,
+};
+
+static struct msm_camera_i2c_reg_setting lm3559_release_setting = {
+	.reg_setting = lm3559_release_array,
+	.size = ARRAY_SIZE(lm3559_release_array),
+	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
+	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
+	.delay = 0,
+};
+
+static struct msm_camera_i2c_reg_setting lm3559_low_setting = {
+	.reg_setting = lm3559_low_array,
+	.size = ARRAY_SIZE(lm3559_low_array),
+	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
+	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
+	.delay = 0,
+};
+
+static struct msm_camera_i2c_reg_setting lm3559_high_setting = {
+	.reg_setting = lm3559_high_array,
+	.size = ARRAY_SIZE(lm3559_high_array),
+	.addr_type = MSM_CAMERA_I2C_BYTE_ADDR,
+	.data_type = MSM_CAMERA_I2C_BYTE_DATA,
+	.delay = 0,
+};
+
+static struct msm_led_flash_reg_t lm3559_regs = {
+	.init_setting = &lm3559_init_setting,
+	.off_setting = &lm3559_off_setting,
+	.low_setting = &lm3559_low_setting,
+	.high_setting = &lm3559_high_setting,
+	.release_setting = &lm3559_release_setting,
+	.led1_low_setting = &lm3559_led1_low_setting,
+	.led2_low_setting = &lm3559_led2_low_setting,
+	.led1_high_setting = &lm3559_led1_high_setting,
+	.led2_high_setting = &lm3559_led2_high_setting,
+	
+};
+
+static struct msm_flash_fn_t lm3559_func_tbl = {
 	.flash_get_subdev_id = msm_led_i2c_trigger_get_subdev_id,//use platform's interface 
 	.flash_led_config = msm_led_i2c_trigger_config,
 	.flash_led_init = msm_flash_led_init,
@@ -440,12 +531,13 @@ static struct msm_flash_fn_t lm3642_func_tbl = {
 };
 
 static struct msm_led_flash_ctrl_t fctrl = {
-	.flash_i2c_client = &lm3642_i2c_client,
-	.reg_setting = &lm3642_regs,
-	.func_tbl = &lm3642_func_tbl,
+	.flash_i2c_client = &lm3559_i2c_client,
+	.reg_setting = &lm3559_regs,
+	.func_tbl = &lm3559_func_tbl,
+	.flag_error_addr = LM3559_FLAGS,
 };
 
-module_init(msm_flash_lm3642_init_module);
-module_exit(msm_flash_lm3642_i2c_remove);
-MODULE_DESCRIPTION("lm3642 FLASH");
+module_init(msm_flash_lm3559_init_module);
+module_exit(msm_flash_lm3559_i2c_remove);
+MODULE_DESCRIPTION("lm3559 FLASH");
 MODULE_LICENSE("GPL v2");
