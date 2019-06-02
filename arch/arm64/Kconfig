@@ -246,6 +246,8 @@ config ARCH_XGENE
 	help
 	  This enables support for AppliedMicro X-Gene SOC Family
 
+source "arch/arm64/Kconfig.hisense"
+
 endmenu
 
 menu "Bus support"
