@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -76,8 +76,6 @@
 #define AP3426_ALS_INT_MASK		0x01
 #define AP3426_PS_INT_MASK		0x02
 
-#define ALS_GAIN_SWITCH_RATIO		80
-
 /* AP3426 ALS data is 16 bit */
 #define ALS_DATA_MASK		0xffff
 #define ALS_LOW_BYTE(data)	((data) & 0xff)
@@ -150,6 +148,7 @@ struct ap3426_data {
 	int			ps_cal;
 	int			als_gain;
 	int			als_persist;
+	unsigned int		als_sensitivity;
 	int			ps_gain;
 	int			ps_persist;
 	int			ps_led_driver;
@@ -177,8 +176,6 @@ static struct pinctrl_config pin_config = {
 };
 
 static int gain_table[] = { 32768, 8192, 2048, 512 };
-/* within 2% percent of jitter will trigger interrupt */
-static int sensitivity_table[] = { 3000, 400, 100, 1 };
 static int pmt_table[] = { 5, 10, 14, 19 }; /* 5.0 9.6, 14.1 18.7 */
 
 /* PS distance table */
@@ -194,10 +191,8 @@ static struct sensors_classdev als_cdev = {
 	.resolution = "1.0",
 	.sensor_power = "0.35",
 	.min_delay = 100000,
-	.max_delay = 1375,
 	.fifo_reserved_event_count = 0,
 	.fifo_max_event_count = 0,
-	.flags = 2,
 	.enabled = 0,
 	.delay_msec = 50,
 	.sensors_enable = NULL,
@@ -217,10 +212,9 @@ static struct sensors_classdev ps_cdev = {
 	.resolution = "1.0",
 	.sensor_power = "0.35",
 	.min_delay = 5000,
-	.max_delay = 1280,
 	.fifo_reserved_event_count = 0,
 	.fifo_max_event_count = 0,
-	.flags = 3,
+	.flags = 1,
 	.enabled = 0,
 	.delay_msec = 50,
 	.sensors_enable = NULL,
@@ -463,10 +457,23 @@ static int ap3426_parse_dt(struct device *dev, struct ap3426_data *di)
 	}
 	di->ps_wakeup_threshold = value;
 
-	rc = of_property_read_u32_array(dp, "di,als-sensitivity",
-			sensitivity_table, ARRAY_SIZE(sensitivity_table));
-	if (rc)
-		dev_info(dev, "read di,als-sensitivity failed. Drop to default\n");
+	rc = of_property_read_u32(dp, "di,als-sensitivity", &value);
+	if (rc) {
+		dev_info(dev,
+			"di,als-sensitivity is not correctly set");
+		value = AP3426_ALS_SENSITIVITY;
+	}
+
+	/* formula to transfer sensitivity in lux to adc value */
+	di->als_sensitivity = (value * 10 << 16) /
+		(gain_table[di->als_gain] * di->als_cal);
+
+	if (di->als_sensitivity == 0) {
+		dev_info(dev,
+			"als sensitivity %d can't reach. Drop to highest.\n",
+			value);
+		di->als_sensitivity = 1;
+	}
 
 	rc = of_property_read_u32_array(dp, "di,ps-distance-table",
 			ps_distance_table, ARRAY_SIZE(ps_distance_table));
@@ -676,120 +683,6 @@ static int ap3426_calc_conversion_time(struct ap3426_data *di, int als_enabled,
 	return conversion_time;
 }
 
-/* update als gain and threshold */
-static int ap3426_als_update_setting(struct ap3426_data *di,
-		unsigned int raw_value)
-{
-	int i;
-	int rc;
-	unsigned int lux_pre;
-	unsigned int config;
-	unsigned int adc_threshold;
-	unsigned int adc_base;
-	int gain_index; /* new gain index */
-	u8 als_data[4];
-
-	lux_pre = (raw_value * gain_table[di->als_gain]) >> 16;
-
-	for (i = ARRAY_SIZE(gain_table) - 1; i >= 0; i--) {
-		if (lux_pre < gain_table[i] *  ALS_GAIN_SWITCH_RATIO / 100)
-			break;
-	}
-
-	gain_index = i < 0 ? 0 : i;
-
-	/*
-	 * Disable als and enable it again to avoid incorrect value.
-	 * Updating als gain during als measurement cycle will cause
-	 * incorrect light sensor adc value. The logic here is to handle
-	 * this scenario.
-	 */
-	if (di->als_gain != gain_index) {
-		/* read the system config register */
-		rc = regmap_read(di->regmap, AP3426_REG_CONFIG, &config);
-		if (rc) {
-			dev_err(&di->i2c->dev, "read %d failed.(%d)\n",
-					AP3426_REG_CONFIG, rc);
-			return rc;
-		}
-
-		/* disable als_sensor */
-		rc = regmap_write(di->regmap, AP3426_REG_CONFIG,
-				config & (~0x01));
-		if (rc) {
-			dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
-					AP3426_REG_CONFIG, rc);
-			return rc;
-		}
-
-		/* set als gain */
-		rc = regmap_write(di->regmap, AP3426_REG_ALS_GAIN, i << 4);
-		if (rc) {
-			dev_err(&di->i2c->dev, "write %d register failed\n",
-					AP3426_REG_ALS_GAIN);
-			return rc;
-		}
-	}
-
-	adc_base = raw_value * gain_table[di->als_gain] / gain_table[i];
-	adc_threshold = ((10 * sensitivity_table[i]) << 16) /
-		(di->als_cal * gain_table[i]);
-	if (adc_threshold < 1)
-		adc_threshold = 1;
-
-	dev_dbg(&di->i2c->dev, "adc_base:%d adc_threshold:%d\n", adc_base,
-			adc_threshold);
-
-	/* lower threshold */
-	if (adc_base < adc_threshold) {
-		als_data[0] = 0x0;
-		als_data[1] = 0x0;
-	} else {
-		als_data[0] = ALS_LOW_BYTE(adc_base - adc_threshold);
-		als_data[1] = ALS_HIGH_BYTE(adc_base - adc_threshold);
-	}
-
-	/* upper threshold */
-	if (adc_base + adc_threshold > ALS_DATA_MASK) {
-		if (di->als_gain != 0) { /* trigger interrupt anyway */
-			als_data[2] = als_data[0];
-			als_data[3] = als_data[1];
-		} else {
-			als_data[2] = ALS_LOW_BYTE(ALS_DATA_MASK);
-			als_data[3] = ALS_HIGH_BYTE(ALS_DATA_MASK);
-		}
-	} else {
-		als_data[2] = ALS_LOW_BYTE(adc_base + adc_threshold);
-		als_data[3] = ALS_HIGH_BYTE(adc_base + adc_threshold);
-	}
-
-	rc = regmap_bulk_write(di->regmap, AP3426_REG_ALS_LOW_THRES_0,
-			als_data, 4);
-	if (rc) {
-		dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
-				AP3426_REG_ALS_LOW_THRES_0, rc);
-		return rc;
-	}
-
-	dev_dbg(&di->i2c->dev, "als threshold: 0x%x 0x%x 0x%x 0x%x\n",
-			als_data[0], als_data[1], als_data[2],
-			als_data[3]);
-
-	/* Enable als again. */
-	if (di->als_gain != gain_index) {
-		rc = regmap_write(di->regmap, AP3426_REG_CONFIG, config | 0x01);
-		if (rc) {
-			dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
-					AP3426_REG_CONFIG, rc);
-			return rc;
-		}
-
-		di->als_gain = i;
-	}
-
-	return 0;
-}
-
 /* Read raw data, convert it to human readable values, report it and
  * reconfigure the sensor.
  */
@@ -800,14 +693,14 @@ static int ap3426_process_data(struct ap3426_data *di, int als_ps)
 	int rc = 0;
 
 	unsigned int tmp;
-	u8 als_data[2];
+	u8 als_data[4];
 	int lux;
 
 	u8 ps_data[4];
 	int i;
 	int distance;
 
-	timestamp = ktime_get_boottime();
+	timestamp = ktime_get();
 
 	if (als_ps) { /* process als value */
 		/* Read data */
@@ -829,10 +722,7 @@ static int ap3426_process_data(struct ap3426_data *di, int als_ps)
 		dev_dbg(&di->i2c->dev, "lux:%d als_data:0x%x-0x%x\n",
 				lux, als_data[0], als_data[1]);
 
-		tmp = als_data[0] | (als_data[1] << 8);
-		if (lux != di->last_als && ((tmp != ALS_DATA_MASK) ||
-					((tmp == ALS_DATA_MASK) &&
-					 (di->als_gain == 0)))) {
+		if (lux != di->last_als)  {
 			input_report_abs(di->input_light, ABS_MISC, lux);
 			input_event(di->input_light, EV_SYN, SYN_TIME_SEC,
 					ktime_to_timespec(timestamp).tv_sec);
@@ -842,14 +732,39 @@ static int ap3426_process_data(struct ap3426_data *di, int als_ps)
 		}
 
 		di->last_als = lux;
+		/* Set up threshold */
+		tmp = als_data[0] | (als_data[1] << 8);
 
-		dev_dbg(&di->i2c->dev, "previous als_gain:%d\n", di->als_gain);
+		/* lower threshold */
+		if (tmp < di->als_sensitivity) {
+			als_data[0] = 0x0;
+			als_data[1] = 0x0;
+		} else {
+			als_data[0] = ALS_LOW_BYTE(tmp - di->als_sensitivity);
+			als_data[1] = ALS_HIGH_BYTE(tmp - di->als_sensitivity);
+		}
 
-		rc = ap3426_als_update_setting(di, tmp);
+		/* upper threshold */
+		if (tmp + di->als_sensitivity > ALS_DATA_MASK) {
+			als_data[2] = 0xff;
+			als_data[3] = 0xff;
+		} else {
+			als_data[2] = ALS_LOW_BYTE(tmp + di->als_sensitivity);
+			als_data[3] = ALS_HIGH_BYTE(tmp + di->als_sensitivity);
+		}
+
+		rc = regmap_bulk_write(di->regmap, AP3426_REG_ALS_LOW_THRES_0,
+				als_data, 4);
 		if (rc) {
-			dev_err(&di->i2c->dev, "update setting failed\n");
+			dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
+					AP3426_REG_ALS_LOW_THRES_0, rc);
 			goto exit;
 		}
+
+		dev_dbg(&di->i2c->dev, "als threshold: 0x%x 0x%x 0x%x 0x%x\n",
+				als_data[0], als_data[1], als_data[2],
+				als_data[3]);
+
 	} else { /* process ps value*/
 		rc = regmap_bulk_read(di->regmap, AP3426_REG_PS_DATA_LOW,
 				ps_data, 2);
@@ -923,13 +838,12 @@ exit:
 static irqreturn_t ap3426_irq_handler(int irq, void *data)
 {
 	struct ap3426_data *di = data;
-	bool rc;
 
-	rc = queue_work(di->workqueue, &di->report_work);
 	/* wake up event should hold a wake lock until reported */
-	if (rc && (atomic_inc_return(&di->wake_count) == 1))
+	if (atomic_inc_return(&di->wake_count) == 1)
 		pm_stay_awake(&di->i2c->dev);
 
+	queue_work(di->workqueue, &di->report_work);
 
 	return IRQ_HANDLED;
 }
@@ -942,22 +856,20 @@ static void ap3426_report_work(struct work_struct *work)
 	unsigned int status;
 
 	mutex_lock(&di->ops_lock);
-
-	/* avoid fake interrupt */
-	if (!di->power_enabled) {
-		dev_dbg(&di->i2c->dev, "fake interrupt triggered\n");
-		goto exit;
-	}
-
 	rc = regmap_read(di->regmap, AP3426_REG_INT_FLAG, &status);
 	if (rc) {
 		dev_err(&di->i2c->dev, "read %d failed.(%d)\n",
 				AP3426_REG_INT_FLAG, rc);
-		status |= AP3426_PS_INT_MASK;
 		goto exit;
 	}
 
 	dev_dbg(&di->i2c->dev, "interrupt issued status=0x%x.\n", status);
+
+	if (!(status & AP3426_PS_INT_MASK)) {
+		dev_dbg(&di->i2c->dev, "not a proximity event\n");
+		if (atomic_dec_and_test(&di->wake_count))
+			pm_relax(&di->i2c->dev);
+	}
 
 	/* als interrupt issueed */
 	if ((status & AP3426_ALS_INT_MASK) && (di->als_enabled)) {
@@ -972,19 +884,22 @@ static void ap3426_report_work(struct work_struct *work)
 		if (rc)
 			goto exit;
 		dev_dbg(&di->i2c->dev, "process ps data done!\n");
-		pm_wakeup_event(&di->input_proximity->dev, 200);
 	}
 
 exit:
-	if (atomic_dec_and_test(&di->wake_count)) {
-		pm_relax(&di->i2c->dev);
-		dev_dbg(&di->i2c->dev, "wake lock released\n");
-	}
-
 	/* clear interrupt */
-	if (di->power_enabled) {
-		if (regmap_write(di->regmap, AP3426_REG_INT_FLAG, 0x0))
-			dev_err(&di->i2c->dev, "clear interrupt failed\n");
+	if (regmap_write(di->regmap, AP3426_REG_INT_FLAG, 0x0))
+		dev_err(&di->i2c->dev, "clear interrupt failed\n");
+
+	/* sensor event processing done */
+	if (status & AP3426_PS_INT_MASK) {
+		dev_dbg(&di->i2c->dev, "proximity data processing done!\n");
+		if (atomic_dec_and_test(&di->wake_count))
+			pm_relax(&di->i2c->dev);
+
+		/* Hold a 200ms wake lock to allow framework handle it */
+		if (di->ps_enabled)
+			pm_wakeup_event(&di->input_proximity->dev, 200);
 	}
 
 	mutex_unlock(&di->ops_lock);
@@ -1114,11 +1029,6 @@ static int ap3426_sync_delay(struct ap3426_data *di, int als_enabled,
 	unsigned int delay;
 	int rc;
 
-	/* ignore delay synchonization while power not enabled */
-	if (!di->power_enabled) {
-		dev_dbg(&di->i2c->dev, "power is not enabled\n");
-		return 0;
-	}
 	convert_msec = ap3426_calc_conversion_time(di, als_enabled, ps_enabled);
 
 	if (als_enabled && ps_enabled)
@@ -1136,7 +1046,6 @@ static int ap3426_sync_delay(struct ap3426_data *di, int als_enabled,
 		delay -= convert_msec;
 
 	/* Insert delay_msec into wait slots. The maximum is 255 * 5ms */
-	dev_dbg(&di->i2c->dev, "wait time: %lu\n", min(delay / 5UL, 255UL));
 	rc = regmap_write(di->regmap, AP3426_REG_WAIT_TIME,
 			min(delay / 5UL, 255UL));
 	if (rc) {
@@ -1436,14 +1345,6 @@ static int ap3426_cdev_ps_calibrate(struct sensors_classdev *sensors_cdev,
 			dev_err(&di->i2c->dev, "power up sensor failed.\n");
 			goto exit;
 		}
-
-		msleep(AP3426_BOOT_TIME_MS);
-
-		rc = ap3426_init_device(di);
-		if (rc) {
-			dev_err(&di->i2c->dev, "init ap3426 failed\n");
-			goto exit;
-		}
 	}
 
 	rc = regmap_read(di->regmap, AP3426_REG_INT_CTL, &interrupt);
@@ -1466,13 +1367,6 @@ static int ap3426_cdev_ps_calibrate(struct sensors_classdev *sensors_cdev,
 		goto exit_enable_interrupt;
 	}
 
-	/* clear wait time */
-	rc = regmap_write(di->regmap, AP3426_REG_WAIT_TIME, 0x0);
-	if (rc) {
-		dev_err(&di->i2c->dev, "clear wait time failed\n");
-		goto exit_enable_interrupt;
-	}
-
 	/* clear offset */
 	ps_data[0] = 0;
 	ps_data[1] = 0;
@@ -1489,17 +1383,12 @@ static int ap3426_cdev_ps_calibrate(struct sensors_classdev *sensors_cdev,
 	if (rc) {
 		dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
 				AP3426_REG_CONFIG, rc);
-		goto exit_disable_ps;
+		goto exit_enable_interrupt;
 	}
 
 	while (--count) {
-		/*
-		 * This function is expected to be executed only 1 time in
-		 * factory and never be executed again during the device's
-		 * life time. It's fine to busy wait for data ready.
-		 */
-		usleep_range(ap3426_calc_conversion_time(di, 0, 1) * 1000,
-			(ap3426_calc_conversion_time(di, 0, 1) + 1) * 1000);
+		/* wait for data ready */
+		msleep(ap3426_calc_conversion_time(di, 0, 1));
 		rc = regmap_bulk_read(di->regmap, AP3426_REG_PS_DATA_LOW,
 				ps_data, 2);
 		if (rc) {
@@ -1514,7 +1403,7 @@ static int ap3426_cdev_ps_calibrate(struct sensors_classdev *sensors_cdev,
 		if (min > (PS_DATA_MASK >> 1)) {
 			dev_err(&di->i2c->dev, "ps data out of range, check if shield\n");
 			rc = -EINVAL;
-			goto exit_disable_ps;
+			goto exit_enable_interrupt;
 		}
 
 		if (apply_now) {
@@ -1525,7 +1414,7 @@ static int ap3426_cdev_ps_calibrate(struct sensors_classdev *sensors_cdev,
 			if (rc) {
 				dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
 						AP3426_REG_PS_CAL_L, rc);
-				goto exit_disable_ps;
+				goto exit_enable_interrupt;
 			}
 			di->bias = min;
 		}
@@ -1536,14 +1425,6 @@ static int ap3426_cdev_ps_calibrate(struct sensors_classdev *sensors_cdev,
 	} else {
 		dev_err(&di->i2c->dev, "calibration failed\n");
 		rc = -EINVAL;
-	}
-
-exit_disable_ps:
-	rc = regmap_write(di->regmap, AP3426_REG_CONFIG, config & (~0x02));
-	if (rc) {
-		dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
-				AP3426_REG_CONFIG, rc);
-		goto exit_enable_interrupt;
 	}
 
 exit_enable_interrupt:
@@ -1746,7 +1627,7 @@ static int ap3426_probe(struct i2c_client *client,
 			ARRAY_SIZE(power_config), true);
 	if (res) {
 		dev_err(&client->dev, "power up sensor failed.\n");
-		goto err_power_config;
+		goto out;
 	}
 
 	res = sensor_pinctrl_init(&client->dev, &pin_config);
@@ -1837,7 +1718,7 @@ static int ap3426_probe(struct i2c_client *client,
 	di->als_cdev.sensors_enable = ap3426_cdev_enable_als;
 	di->als_cdev.sensors_poll_delay = ap3426_cdev_set_als_delay;
 	di->als_cdev.sensors_flush = ap3426_cdev_als_flush;
-	res = sensors_classdev_register(&di->input_light->dev, &di->als_cdev);
+	res = sensors_classdev_register(&client->dev, &di->als_cdev);
 	if (res) {
 		dev_err(&client->dev, "sensors class register failed.\n");
 		goto err_register_als_cdev;
@@ -1850,8 +1731,7 @@ static int ap3426_probe(struct i2c_client *client,
 	di->ps_cdev.sensors_calibrate = ap3426_cdev_ps_calibrate;
 	di->ps_cdev.sensors_write_cal_params = ap3426_cdev_ps_write_cal;
 	di->ps_cdev.params = di->calibrate_buf;
-	res = sensors_classdev_register(&di->input_proximity->dev,
-			&di->ps_cdev);
+	res = sensors_classdev_register(&client->dev, &di->ps_cdev);
 	if (res) {
 		dev_err(&client->dev, "sensors class register failed.\n");
 		goto err_register_ps_cdev;
@@ -1859,7 +1739,6 @@ static int ap3426_probe(struct i2c_client *client,
 
 	sensor_power_config(&client->dev, power_config,
 			ARRAY_SIZE(power_config), false);
-	di->power_enabled = false;
 
 	dev_info(&client->dev, "ap3426 successfully probed!\n");
 
@@ -1880,9 +1759,6 @@ err_init_device:
 	device_init_wakeup(&client->dev, 0);
 err_check_device:
 err_pinctrl_init:
-	sensor_power_config(&client->dev, power_config,
-			ARRAY_SIZE(power_config), false);
-err_power_config:
 	sensor_power_deinit(&client->dev, power_config,
 			ARRAY_SIZE(power_config));
 out:
@@ -1895,6 +1771,12 @@ static int ap3426_remove(struct i2c_client *client)
 
 	sensors_classdev_unregister(&di->ps_cdev);
 	sensors_classdev_unregister(&di->als_cdev);
+
+	if (di->input_light)
+		input_unregister_device(di->input_light);
+
+	if (di->input_proximity)
+		input_unregister_device(di->input_proximity);
 
 	destroy_workqueue(di->workqueue);
 	device_init_wakeup(&di->i2c->dev, 0);
@@ -1913,7 +1795,6 @@ static int ap3426_suspend(struct device *dev)
 	int res = 0;
 	struct ap3426_data *di = dev_get_drvdata(dev);
 	u8 ps_data[4];
-	unsigned int config;
 	int idx = di->ps_wakeup_threshold;
 
 	dev_dbg(dev, "suspending ap3426...");
@@ -1922,28 +1803,6 @@ static int ap3426_suspend(struct device *dev)
 
 	/* proximity is enabled */
 	if (di->ps_enabled) {
-		/* disable als sensor to avoid wake up by als interrupt */
-		if (di->als_enabled) {
-			res = regmap_read(di->regmap, AP3426_REG_CONFIG,
-					&config);
-			if (res) {
-				dev_err(&di->i2c->dev, "read %d failed.(%d)\n",
-						AP3426_REG_CONFIG, res);
-				goto exit;
-			}
-
-
-			res = regmap_write(di->regmap, AP3426_REG_CONFIG,
-					config & (~0x1));
-			if (res) {
-				dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
-						AP3426_REG_CONFIG, res);
-				goto exit;
-			}
-
-			ap3426_sync_delay(di, 0, 1, 0, di->ps_delay);
-		}
-
 		/* Don't power off sensor because proximity is a
 		 * wake up sensor.
 		 */
@@ -2002,7 +1861,6 @@ static int ap3426_resume(struct device *dev)
 {
 	int res = 0;
 	struct ap3426_data *di = dev_get_drvdata(dev);
-	unsigned int config;
 
 	dev_dbg(dev, "resuming ap3426...");
 	if (di->ps_enabled) {
@@ -2010,28 +1868,6 @@ static int ap3426_resume(struct device *dev)
 			dev_dbg(&di->i2c->dev, "disable irq wake\n");
 			disable_irq_wake(di->irq);
 		}
-
-		if (di->als_enabled) {
-			res = regmap_read(di->regmap, AP3426_REG_CONFIG,
-					&config);
-			if (res) {
-				dev_err(&di->i2c->dev, "read %d failed.(%d)\n",
-						AP3426_REG_CONFIG, res);
-				goto exit;
-			}
-
-			res = regmap_write(di->regmap, AP3426_REG_CONFIG,
-					config | 0x1);
-			if (res) {
-				dev_err(&di->i2c->dev, "write %d failed.(%d)\n",
-						AP3426_REG_CONFIG, res);
-				goto exit;
-			}
-
-			ap3426_sync_delay(di, 1, 1, di->als_delay,
-					di->ps_delay);
-		}
-
 	} else {
 		pinctrl_select_state(pin_config.pinctrl, pin_config.state[0]);
 		/* Power up sensor */

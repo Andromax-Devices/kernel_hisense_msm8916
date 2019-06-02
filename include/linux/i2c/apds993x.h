@@ -101,8 +101,8 @@ struct apds993x_platform_data {
 	void (*exit)(void);
 	int (*power_on)(bool);
 
-	unsigned int prox_threshold;
-	unsigned int prox_hsyteresis_threshold;
+	unsigned int piht;
+	unsigned int pilt;
 	unsigned int prox_pulse;
 	unsigned int prox_gain;
 	unsigned int als_threshold_hsyteresis;
@@ -114,6 +114,7 @@ struct apds993x_platform_data {
 	unsigned int ga_value;
 	unsigned int df_value;
 	unsigned int atime;
+	unsigned int light_fix_factor;
 
 	bool i2c_pull_up;
 	bool digital_pwr_regulator;
