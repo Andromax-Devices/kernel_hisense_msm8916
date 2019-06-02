@@ -73,7 +73,11 @@ zinstall install: vmlinux
 
 dtbs: scripts
 	$(Q)$(MAKE) $(build)=$(boot)/dts dtbs
+ifdef CONFIG_MACH_HISENSE_SMARTPHONE
+	$(Q)$(MAKE) $(build)=$(boot)/dts/hisense dtbs
+else
 	$(Q)$(MAKE) $(build)=$(boot)/dts/qcom dtbs
+endif
 
 PHONY += vdso_install
 vdso_install:
