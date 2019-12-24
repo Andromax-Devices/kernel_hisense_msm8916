@@ -32,6 +32,56 @@ struct snd_lsm_sound_model {
 	bool detect_failure;
 };
 
+enum LSM_PARAM_TYPE {
+	LSM_ENDPOINT_DETECT_THRESHOLD = 0,
+	LSM_OPERATION_MODE,
+	LSM_GAIN,
+	LSM_MIN_CONFIDENCE_LEVELS,
+	LSM_REG_SND_MODEL,
+	LSM_DEREG_SND_MODEL,
+	LSM_CUSTOM_PARAMS,
+	LSM_POLLING_ENABLE,
+	/* driver ioctl will parse only so many params */
+	LSM_PARAMS_MAX,
+};
+
+/*
+ * Data for LSM_ENDPOINT_DETECT_THRESHOLD param_type
+ * @epd_begin: Begin threshold
+ * @epd_end: End threshold
+ */
+struct snd_lsm_ep_det_thres {
+	__u32 epd_begin;
+	__u32 epd_end;
+};
+
+/*
+ * Data for LSM_OPERATION_MODE param_type
+ * @mode: The detection mode to be used
+ * @detect_failure: Setting to enable failure detections.
+ */
+struct snd_lsm_detect_mode {
+	enum lsm_detection_mode mode;
+	bool detect_failure;
+};
+
+/*
+ * Data for LSM_GAIN param_type
+ * @gain: The gain to be applied on LSM
+ */
+struct snd_lsm_gain {
+	__u16 gain;
+};
+
+/*
+ * Data for LSM_POLLING_ENABLE param_type
+ * @poll_en: Polling enable or disable
+ */
+struct snd_lsm_poll_enable {
+	bool poll_en;
+};
+
+
 struct snd_lsm_sound_model_v2 {
 	__u8 __user *data;
 	__u8 *confidence_level;
@@ -56,6 +106,7 @@ struct snd_lsm_detection_params {
 	enum lsm_detection_mode detect_mode;
 	__u8 num_confidence_levels;
 	bool detect_failure;
+	bool poll_enable;
 };
 
 #define SNDRV_LSM_REG_SND_MODEL	 _IOW('U', 0x00, struct snd_lsm_sound_model)

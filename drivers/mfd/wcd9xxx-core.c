@@ -1984,13 +1984,21 @@ static int wcd9xxx_slim_probe(struct slim_device *slim)
 	debugfs_wcd9xxx_dent = debugfs_create_dir
 		("wcd9310_slimbus_interface_device", 0);
 	if (!IS_ERR(debugfs_wcd9xxx_dent)) {
-		debugfs_peek = debugfs_create_file("peek",
-		S_IFREG | S_IRUGO, debugfs_wcd9xxx_dent,
-		(void *) "peek", &codec_debug_ops);
+		debugfs_peek = debugfs_create_file("slimslave_peek",
+		S_IFREG | S_IRUSR, debugfs_wcd9xxx_dent,
+		(void *) "slimslave_peek", &codec_debug_ops);
 
-		debugfs_poke = debugfs_create_file("poke",
-		S_IFREG | S_IRUGO, debugfs_wcd9xxx_dent,
-		(void *) "poke", &codec_debug_ops);
+		debugfs_poke = debugfs_create_file("slimslave_poke",
+		S_IFREG | S_IRUSR, debugfs_wcd9xxx_dent,
+		(void *) "slimslave_poke", &codec_debug_ops);
+
+		debugfs_power_state = debugfs_create_file("power_state",
+		S_IFREG | S_IRUSR, debugfs_wcd9xxx_dent,
+		(void *) "power_state", &codec_debug_ops);
+
+		debugfs_reg_dump = debugfs_create_file("slimslave_reg_dump",
+		S_IFREG | S_IRUSR, debugfs_wcd9xxx_dent,
+		(void *) "slimslave_reg_dump", &codec_debug_ops);
 	}
 #endif
 
